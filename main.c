@@ -247,6 +247,17 @@ static void partial_refresh(EpdRect area) {
     epd_power_disable();
 }
 
+/* Direct update (MODE_DU): purely draws black/white pixels directly without
+ * any intermediate black or white clearing pulses. Zero flash, instant draw. */
+static void direct_refresh(EpdRect area) {
+    memset(hl.dirty_lines, 0, (size_t)epd_height() * sizeof(bool));
+    EpdRect band = {area.x, 0, area.width, SH};
+
+    epd_power_enable();
+    checkError(epd_hl_update_area(&hl, MODE_DU, waveform_temperature(), band));
+    epd_power_disable();
+}
+
 static EpdRect rect_union(EpdRect a, EpdRect b) {
     int x0 = a.x < b.x ? a.x : b.x;
     int y0 = a.y < b.y ? a.y : b.y;
@@ -454,20 +465,19 @@ static const char* reading_lines[] = {
 #define READING_PAGE_COUNT ((READING_LINE_COUNT + READING_LINES_PER_PAGE - 1) / READING_LINES_PER_PAGE)
 
 static void draw_reading(void) {
-    epd_hl_set_all_white(&hl);
     epd_fill_rect((EpdRect){0, 0, SW, SH}, PX(G_WHITE), fb);
 
-    /* header */
-    epd_fill_rect((EpdRect){0, 0, SW, 72}, PX(G_LGRAY), fb);
+    /* header: white background + black text + subtle divider */
     put_text(
-        font_body, "人间草木 · 汪曾祺", 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_LGRAY,
+        font_body, "人间草木 · 汪曾祺", 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_WHITE,
         0
     );
     char page[16];
     snprintf(page, sizeof(page), "%d / %d", s_read_page + 1, READING_PAGE_COUNT);
     put_right(
-        font_body, page, SW - 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_LGRAY, 0
+        font_body, page, SW - 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_WHITE, 0
     );
+    epd_draw_hline(0, 72, SW, PX(G_BLACK), fb);
 
     /* body */
     int y = 140;
@@ -477,12 +487,36 @@ static void draw_reading(void) {
         y += 72;
     }
 
-    /* footer hint */
-    epd_fill_rect((EpdRect){0, SH - 56, SW, 56}, PX(G_LGRAY), fb);
+    /* footer hint: white background + top divider + centered text */
+    epd_draw_hline(0, SH - 56, SW, PX(G_BLACK), fb);
     put_center(
         font_body, "UP / DOWN 翻页     OK 返回", SW / 2,
-        vcenter_baseline(font_body, SH - 56, 56), G_BLACK, G_LGRAY, 0
+        vcenter_baseline(font_body, SH - 56, 56), G_BLACK, G_WHITE, 0
     );
+}
+
+/* Redraw only the body text and page number for page turns.
+ * The header title and footer divider/text are NOT modified at all,
+ * keeping static elements 100% frozen without any flicker. */
+static void draw_reading_body(void) {
+    /* clear body area only (between header divider and footer divider) */
+    epd_fill_rect((EpdRect){0, 73, SW, SH - 73 - 57}, PX(G_WHITE), fb);
+
+    /* update page number on pure white background */
+    epd_fill_rect((EpdRect){SW / 2, 0, SW / 2, 72}, PX(G_WHITE), fb);
+    char page[16];
+    snprintf(page, sizeof(page), "%d / %d", s_read_page + 1, READING_PAGE_COUNT);
+    put_right(
+        font_body, page, SW - 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_WHITE, 0
+    );
+
+    /* redraw body text */
+    int y = 140;
+    int first = s_read_page * READING_LINES_PER_PAGE;
+    for (int i = 0; i < READING_LINES_PER_PAGE && first + i < READING_LINE_COUNT; i++) {
+        put_text(font_body, reading_lines[first + i], 48, y, G_BLACK, G_WHITE, 0);
+        y += 72;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -558,10 +592,10 @@ static void home_activate(void) {
         s_screen = SCR_READING;
         s_read_page = 0;
         draw_reading();
-        full_refresh();
+        direct_refresh((EpdRect){0, 0, SW, SH});
     } else {
         prepare_home();
-        full_refresh();
+        partial_refresh((EpdRect){0, 0, SW, SH});
     }
 }
 
@@ -570,18 +604,18 @@ static void handle_event(int ev) {
         if (ev == BTN_OK) {
             s_screen = SCR_HOME;
             prepare_home();
-            full_refresh();
+            partial_refresh((EpdRect){0, 0, SW, SH});
         } else if (ev == BTN_UP) {
             if (s_read_page > 0) {
                 s_read_page--;
-                draw_reading();
-                partial_refresh((EpdRect){0, 0, SW, SH});
+                draw_reading_body();
+                direct_refresh((EpdRect){0, 0, SW, SH});
             }
         } else if (ev == BTN_DOWN) {
             if (s_read_page < READING_PAGE_COUNT - 1) {
                 s_read_page++;
-                draw_reading();
-                partial_refresh((EpdRect){0, 0, SW, SH});
+                draw_reading_body();
+                direct_refresh((EpdRect){0, 0, SW, SH});
             }
         }
         return;
