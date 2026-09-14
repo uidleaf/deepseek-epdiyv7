@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include <driver/gpio.h>
 
@@ -30,6 +31,7 @@
 #include "ui_sc_20.h"
 #include "ui_clock.h"
 #include "img_bg.h"
+#include "app_icons.h"
 
 /* ------------------------------------------------------------------------- */
 /*  ADC entry points (Arduino.h is C++, declare analogRead from C)            */
@@ -267,6 +269,50 @@ static EpdRect rect_union(EpdRect a, EpdRect b) {
     return r;
 }
 
+static EpdRect focus_union(EpdRect a, EpdRect b) {
+    EpdRect u = rect_union(a, b);
+    int x = (u.x >= 4) ? u.x - 4 : 0;
+    int y = (u.y >= 4) ? u.y - 4 : 0;
+    int w = u.width + 8;
+    int h = u.height + 8;
+    if (x + w > SW) w = SW - x;
+    if (y + h > SH) h = SH - y;
+    return (EpdRect){x, y, w, h};
+}
+
+static void draw_rounded_rect(EpdRect r, int rad, uint8_t color, int thickness) {
+    if (r.width <= 0 || r.height <= 0) return;
+    for (int t = 0; t < thickness; t++) {
+        epd_draw_hline(r.x + rad, r.y + t, r.width - 2 * rad, color, fb);
+        epd_draw_hline(r.x + rad, r.y + r.height - 1 - t, r.width - 2 * rad, color, fb);
+        epd_draw_vline(r.x + t, r.y + rad, r.height - 2 * rad, color, fb);
+        epd_draw_vline(r.x + r.width - 1 - t, r.y + rad, r.height - 2 * rad, color, fb);
+    }
+    for (int dy = 0; dy <= rad; dy++) {
+        for (int dx = 0; dx <= rad; dx++) {
+            int d2 = (rad - dx) * (rad - dx) + (rad - dy) * (rad - dy);
+            int r_outer2 = rad * rad;
+            int r_inner2 = (rad - thickness) * (rad - thickness);
+            if (d2 <= r_outer2 && d2 >= r_inner2) {
+                epd_draw_pixel(r.x + dx, r.y + dy, color, fb);
+                epd_draw_pixel(r.x + r.width - 1 - dx, r.y + dy, color, fb);
+                epd_draw_pixel(r.x + dx, r.y + r.height - 1 - dy, color, fb);
+                epd_draw_pixel(r.x + r.width - 1 - dx, r.y + r.height - 1 - dy, color, fb);
+            }
+        }
+    }
+}
+
+static void fill_rounded_rect(EpdRect r, int rad, uint8_t color) {
+    if (r.width <= 0 || r.height <= 0) return;
+    epd_fill_rect((EpdRect){r.x, r.y + rad, r.width, r.height - 2 * rad}, color, fb);
+    for (int dy = 0; dy < rad; dy++) {
+        int dx = rad - (int)sqrtf((float)(rad * rad - (rad - dy) * (rad - dy)));
+        epd_draw_hline(r.x + dx, r.y + dy, r.width - 2 * dx, color, fb);
+        epd_draw_hline(r.x + dx, r.y + r.height - 1 - dy, r.width - 2 * dx, color, fb);
+    }
+}
+
 static int vcenter_baseline(const EpdFont* f, int y, int h) {
     return y + h / 2 + (f->ascender + f->descender) / 2;
 }
@@ -312,24 +358,22 @@ static void put_right(
 /* ------------------------------------------------------------------------- */
 
 static int y_status, y_hero, y_cards, y_grid, y_nav;
-static int card_h, card_w, card_gap;
-static int grid_x, grid_w, cell_w, cell_h, cell_gap;
+static int card_h, card_w, card1_x, card2_x, nav_h;
+
+static const int col_centers[4] = {136, 403, 670, 936};
+static const int row_ys[2] = {864, 1060};
 
 static void layout_compute(void) {
     y_status = 0;
     y_hero = 76;
-    y_cards = 570;
+    y_cards = 520;
     card_h = 300;
-    card_gap = 24;
-    card_w = (SW - 3 * 24) / 2;
-    y_grid = 910;
-    y_nav = SH - 64;
-
-    grid_x = 24;
-    grid_w = SW - 2 * 24;
-    cell_gap = 20;
-    cell_w = (grid_w - 3 * cell_gap) / 4;
-    cell_h = 120;
+    card_w = 480;
+    card1_x = 36;
+    card2_x = SW - 36 - card_w;
+    y_grid = 864;
+    y_nav = 1315;
+    nav_h = 100;
 }
 
 /* Ink-wash landscape background, pre-rotated to the native framebuffer
@@ -339,60 +383,79 @@ static void draw_background(void) {
 }
 
 static void draw_statusbar(void) {
-    epd_fill_rect((EpdRect){0, y_status, SW, 56}, PX(G_LGRAY), fb);
-    put_text(font_body, "06:30", 24, vcenter_baseline(font_body, y_status, 56), G_BLACK, G_LGRAY, 0);
-    put_right(font_body, "85%", SW - 24, vcenter_baseline(font_body, y_status, 56), G_BLACK, G_LGRAY, 0);
+    epd_fill_rect((EpdRect){0, y_status, SW, 56}, PX(G_WHITE), fb);
+    put_text(font_body, "06:30", 32, vcenter_baseline(font_body, y_status, 56), G_BLACK, G_WHITE, 0);
+    put_right(font_body, "85%", SW - 32, vcenter_baseline(font_body, y_status, 56), G_BLACK, G_WHITE, 0);
 }
 
 static void draw_hero(void) {
     int x = 80;
-    put_text(font_clock, "06:30", x, y_hero + 154, G_BLACK, G_WHITE, 0);
-    put_text(font_body, "5月20日 星期二", x, y_hero + 224, G_BLACK, G_WHITE, 0);
-    put_text(font_body, "乙巳年四月廿三", x, y_hero + 274, G_BLACK, G_WHITE, 0);
-    epd_draw_hline(x, y_hero + 314, 120, PX(G_DGRAY), fb);
-    put_text(font_body, "慢下来，", x, y_hero + 370, G_BLACK, G_WHITE, 0);
-    put_text(font_body, "让灵感跟上生活的温度。", x, y_hero + 420, G_BLACK, G_WHITE, 0);
+    put_text(font_clock, "06:30", x, y_hero + 130, G_BLACK, G_WHITE, 0);
+    put_text(font_body, "5月20日 星期二", x, y_hero + 195, G_BLACK, G_WHITE, 0);
+    put_text(font_body, "乙巳年四月廿三", x, y_hero + 240, G_BLACK, G_WHITE, 0);
+    epd_fill_rect((EpdRect){x, y_hero + 265, 120, 3}, PX(G_BLACK), fb);
+    put_text(font_body, "慢下来，", x, y_hero + 310, G_BLACK, G_WHITE, 0);
+    put_text(font_body, "让灵感跟上生活的温度。", x, y_hero + 355, G_BLACK, G_WHITE, 0);
 }
 
 static void draw_card_reading(EpdRect r) {
-    epd_fill_rect(r, PX(G_LGRAY), fb);
-    epd_draw_rect(r, PX(G_DGRAY), fb);
-    int pad = 20;
+    fill_rounded_rect(r, 24, PX(G_WHITE));
+    draw_rounded_rect(r, 24, PX(G_BLACK), 3);
+    int pad = 28;
 
-    put_text(font_body, "正在阅读", r.x + pad, r.y + 46, G_BLACK, G_LGRAY, 0);
-    put_text(font_body, "人间草木", r.x + pad, r.y + 120, G_BLACK, G_LGRAY, 0);
-    put_text(font_body, "汪曾祺", r.x + pad, r.y + 160, G_BLACK, G_LGRAY, 0);
+    put_text(font_body, "正在阅读", r.x + pad, r.y + 44, G_BLACK, G_WHITE, 0);
+    put_text(font_body, "人间草木", r.x + pad, r.y + 98, G_BLACK, G_WHITE, 0);
+    put_text(font_body, "汪曾祺", r.x + pad, r.y + 140, G_BLACK, G_WHITE, 0);
 
-    /* progress bar: white background, black border, black fill at 45% */
-    int bar_x = r.x + pad, bar_w = r.width - 2 * pad, bar_y = r.y + 194;
-    epd_fill_rect((EpdRect){bar_x, bar_y, bar_w, 18}, PX(G_WHITE), fb);
-    epd_draw_rect((EpdRect){bar_x, bar_y, bar_w, 18}, PX(G_BLACK), fb);
-    epd_fill_rect((EpdRect){bar_x + 3, bar_y + 3, (bar_w - 6) * 45 / 100, 12}, PX(G_BLACK), fb);
-    put_text(font_body, "阅读进度 45%", r.x + pad, r.y + 244, G_BLACK, G_LGRAY, 0);
+    /* progress line */
+    int y_prog = r.y + 175;
+    int prog_w = 200;
+    epd_fill_rect((EpdRect){r.x + pad, y_prog, prog_w, 4}, PX(G_LGRAY), fb);
+    epd_fill_rect((EpdRect){r.x + pad, y_prog, prog_w * 45 / 100, 4}, PX(G_BLACK), fb);
+    put_text(font_body, "阅读进度 45%", r.x + pad, y_prog + 32, G_BLACK, G_WHITE, 0);
 
-    EpdRect btn = {r.x + pad, r.y + r.height - 56, 180, 40};
-    epd_fill_rect(btn, PX(G_BLACK), fb);
-    put_center(font_body, "继续阅读", btn.x + btn.width / 2, vcenter_baseline(font_body, btn.y, btn.height), G_WHITE, G_BLACK, 0);
+    /* capsule button: unselected default in static buffer */
+    EpdRect btn = {r.x + pad, r.y + r.height - 60, BTN_READING_W, BTN_READING_H};
+    epd_draw_rotated_image(btn, btn_reading_unsel_data, fb);
+
+    /* book cover thumbnail on the right */
+    EpdRect book = {r.x + r.width - pad - BOOK_THUMB_W, r.y + 20, BOOK_THUMB_W, BOOK_THUMB_H};
+    epd_draw_rotated_image(book, book_thumb_data, fb);
 }
 
 static void draw_card_todo(EpdRect r) {
-    epd_fill_rect(r, PX(G_LGRAY), fb);
-    epd_draw_rect(r, PX(G_DGRAY), fb);
-    int pad = 20;
+    fill_rounded_rect(r, 24, PX(G_WHITE));
+    draw_rounded_rect(r, 24, PX(G_BLACK), 3);
+    int pad = 28;
 
-    put_text(font_body, "今日待办", r.x + pad, r.y + 46, G_BLACK, G_LGRAY, 0);
-    put_right(font_body, "+", r.x + r.width - pad, r.y + 46, G_BLACK, G_LGRAY, 0);
+    put_text(font_body, "今日待办", r.x + pad, r.y + 44, G_BLACK, G_WHITE, 0);
 
-    const char* items[4] = {"读书30分钟", "整理设计方案", "练习钢琴", "早起"};
-    const bool done[4] = {false, false, false, true};
+    /* circled plus icon */
+    int plus_cx = r.x + r.width - pad - 16;
+    int plus_cy = r.y + 36;
+    epd_draw_circle(plus_cx, plus_cy, 15, PX(G_BLACK), fb);
+    epd_draw_circle(plus_cx, plus_cy, 14, PX(G_BLACK), fb);
+    epd_draw_circle(plus_cx, plus_cy, 13, PX(G_BLACK), fb);
+    epd_fill_rect((EpdRect){plus_cx - 8, plus_cy - 1, 17, 3}, PX(G_BLACK), fb);
+    epd_fill_rect((EpdRect){plus_cx - 1, plus_cy - 8, 3, 17}, PX(G_BLACK), fb);
+
+    const char* tasks[4] = {"读书30分钟", "整理设计方案", "练习钢琴", "早起"};
     for (int i = 0; i < 4; i++) {
-        int iy = r.y + 92 + i * 48;
-        EpdRect box = {r.x + pad, iy - 12, 20, 20};
-        epd_draw_rect(box, PX(G_BLACK), fb);
-        if (done[i]) {
-            epd_fill_rect(box, PX(G_BLACK), fb);
+        int iy = r.y + 92 + i * 50;
+        int cx = r.x + pad + 14;
+        int cy = iy + 14;
+        if (i < 3) {
+            epd_draw_circle(cx, cy, 11, PX(G_BLACK), fb);
+            epd_draw_circle(cx, cy, 10, PX(G_BLACK), fb);
+            epd_draw_circle(cx, cy, 9, PX(G_BLACK), fb);
+        } else {
+            epd_fill_circle(cx, cy, 11, PX(G_BLACK), fb);
+            for (int t = -1; t <= 1; t++) {
+                epd_draw_line(cx - 5, cy + t, cx - 1, cy + 4 + t, PX(G_WHITE), fb);
+                epd_draw_line(cx - 1, cy + 4 + t, cx + 5, cy - 3 + t, PX(G_WHITE), fb);
+            }
         }
-        put_text(font_body, items[i], r.x + pad + 32, iy + 6, G_BLACK, G_LGRAY, 0);
+        put_text(font_body, tasks[i], r.x + pad + 40, iy + 24, G_BLACK, G_WHITE, 0);
     }
 }
 
@@ -401,31 +464,40 @@ static const char* app_names[8] = {
 };
 
 static void draw_grid(void) {
-    for (int row = 0; row < 2; row++) {
-        for (int col = 0; col < 4; col++) {
-            int idx = row * 4 + col;
-            EpdRect cell = {
-                grid_x + col * (cell_w + cell_gap), y_grid + row * (cell_h + 14), cell_w, cell_h};
-            epd_fill_rect(cell, PX(G_WHITE), fb);
-            epd_draw_rect(cell, PX(G_DGRAY), fb);
-            EpdRect icon = {cell.x + cell.width / 4, cell.y + 8, cell.width / 2, 40};
-            epd_draw_rect(icon, PX(G_DGRAY), fb);
-            put_center(
-                font_body, app_names[idx], cell.x + cell.width / 2, cell.y + cell.height - 14,
-                G_BLACK, G_WHITE, 0
-            );
+    for (int r = 0; r < 2; r++) {
+        for (int c = 0; c < 4; c++) {
+            int idx = r * 4 + c;
+            int cx = col_centers[c];
+            int cy = row_ys[r];
+            EpdRect icon_rect = {cx - ICON_W / 2, cy, ICON_W, ICON_H};
+            epd_draw_rotated_image(icon_rect, g_icons_unselected[idx], fb);
+            put_center(font_body, app_names[idx], cx, cy + ICON_H + 30, G_BLACK, G_WHITE, 0);
         }
     }
+}
+
+static void draw_pagination(void) {
+    int y_dots = 1250;
+    epd_fill_circle(SW / 2 - 22, y_dots, 6, PX(G_BLACK), fb);
+    epd_draw_circle(SW / 2, y_dots, 6, PX(G_BLACK), fb);
+    epd_draw_circle(SW / 2, y_dots, 5, PX(G_BLACK), fb);
+    epd_draw_circle(SW / 2 + 22, y_dots, 6, PX(G_BLACK), fb);
+    epd_draw_circle(SW / 2 + 22, y_dots, 5, PX(G_BLACK), fb);
 }
 
 static const char* nav_names[4] = {"首页", "发现", "灵感", "我的"};
 
 static void draw_navbar(void) {
-    epd_fill_rect((EpdRect){0, y_nav, SW, SH - y_nav}, PX(G_LGRAY), fb);
-    int tab_w = SW / 4;
+    int nav_w = SW - card1_x * 2;
+    EpdRect nav_rect = {card1_x, y_nav, nav_w, nav_h};
+    fill_rounded_rect(nav_rect, nav_h / 2, PX(G_WHITE));
+    draw_rounded_rect(nav_rect, nav_h / 2, PX(G_BLACK), 3);
+
     for (int i = 0; i < 4; i++) {
-        int cx = tab_w * i + tab_w / 2;
-        put_center(font_body, nav_names[i], cx, vcenter_baseline(font_body, y_nav, SH - y_nav), G_BLACK, G_LGRAY, 0);
+        int cx = col_centers[i];
+        EpdRect ir = {cx - NAV_ICON_W / 2, y_nav + 14, NAV_ICON_W, NAV_ICON_H};
+        epd_draw_rotated_image(ir, g_nav_icons[i], fb);
+        put_center(font_body, nav_names[i], cx, y_nav + 78, G_BLACK, G_WHITE, 0);
     }
 }
 
@@ -438,30 +510,103 @@ enum { SCR_HOME = 0, SCR_READING };
 static int s_screen = SCR_HOME;
 static int s_read_page = 0;
 
-/* Pre-wrapped reading text.  If you change this text, add the new characters
- * to .tools/gen_fonts.py and regenerate ui_sc_20.h. */
+/* Pre-wrapped reading text for 6-inch ED060KD1 (1072x1448).
+ * 6 full continuous pages from Wang Zengqi"s "人间草木".
+ * 21 characters per line, 2-char indent, standard CJK wrapping rules. */
 static const char* reading_lines[] = {
-    "读书是用生活所感去读书，",
-    "用读书所得去生活。",
+    /* --- Page 1 --- */
+    "　　如果你来访我，我不在，请和我门外的花坐",
+    "一会儿。它们很温暖，我注视它们很多很多日子",
+    "了。它们不知道我的名字，但我认得它们每一朵",
+    "盛开的模样。它们在晨光中苏醒，在微风里舒展",
+    "着柔嫩的花瓣，静静记录着光阴的流转。",
+    "　　一定要爱着点什么，恰似草木对光阴的钟",
+    "情。人总要呆在一种什么东西里，沉溺其中。苟",
+    "有所得，才能证实自己的存在，切实地活出滋味",
+    "来。我以为，最美的日子，不过是草木知秋，见",
+    "微知著。在平凡琐碎的人间烟火中，寻觅属于自",
+    "己的一分清欢。",
+    "　　慢下来，听微风穿过树叶的轻响，看午后温",
+    "暖的阳光落在泛黄纸页上的温度。草木有情，人",
+    "间有味。",
+    /* --- Page 2 --- */
+    "　　昆明的雨季是明亮的、丰满的，也是使人动",
+    "情的。城里城外，到处是绿的。草木的枝叶水分",
+    "都足足的，新发的嫩芽油光发亮。雨季的花极",
+    "多，缅桂花、木槿花，开得满树皆是。",
+    "　　栀子花粗粗大大，又香得掸都掸不开，于是",
+    "为文雅人不取，以为品格不高。栀子花说：“去",
+    "你的，我就是要这样香，香得痛痛快快，你们管",
+    "得着吗！”这种泼辣劲儿，让人打心眼里痛快喜",
+    "欢。",
+    "　　雨季里菌子也极多，牛肝菌、青头菌、干巴",
+    "菌，味道鲜美绝伦。人在雨中走着，不觉得冷，",
+    "只觉得浑身湿润清爽。四方草木，各得其所，人",
+    "间至味，最是清欢。",
     "",
-    "在安静的午后，翻开一本书，",
-    "让时间慢下来。",
+    /* --- Page 3 --- */
+    "　　初春，微风一吹，荠菜刚从枯草丛中冒头，",
+    "绿意盈盈。北京人说这是“吃春”，咬一口春天",
+    "的鲜嫩。柳芽初吐时，采嫩柳芽，沸水焯过，凉",
+    "拌，微苦清香，最解春困。几箸下肚，口舌生",
+    "津。",
+    "　　春雨淅淅沥沥，枸杞初生嫩苗，摘其嫩头与",
+    "极嫩的豆腐同拌，清香扑鼻。竹林里春笋破土而",
+    "出，带着泥土的清甜与芬芳。春天的韭菜也是极",
+    "好的，头刀韭菜炒鸡蛋，嫩绿金黄，鲜美无匹。",
+    "　　正如东坡所云：蒌蒿满地芦芽短，正是河豚",
+    "欲上时。苏东坡真是个极会生活的可爱之人。一",
+    "草一木，一粥一饭，生活是很好玩的，只要你用",
+    "心去尝、去品、去感受。寻常巷陌，皆有诗意。",
     "",
-    "窗外的风，杯中的茶，纸上的字，",
-    "都是此刻的陪伴。",
+    /* --- Page 4 --- */
+    "　　夏天是属于荷花与西瓜的。荷塘里荷叶田",
+    "田，如碧玉铺就，连绵无际。阵雨过后，荷叶上",
+    "水珠滚来滚去，晶莹剔透，可爱极了。红荷初",
+    "绽，亭亭玉立，清香远溢，沁人心脾。",
+    "　　小院里搭起葡萄架，青绿的葡萄一串串挂在",
+    "茂密的绿叶之间。夏夜，搬一把竹椅坐在葡萄架",
+    "下，摇着蒲扇，听草丛里的虫鸣与远处的蛙声。",
+    "天热极时，切开冰镇西瓜，咬上一大口，暑气全",
+    "消。",
+    "　　晚风清凉，星河璀璨，时光就这么悠悠地走",
+    "着。看萤火虫在草叶间提灯夜行，忽明忽暗。平",
+    "淡之中满是踏实与从容，岁月静好，莫过于此。",
     "",
-    "愿每一次阅读，",
-    "都能让心有片刻的安宁。",
     "",
-    "愿你在喧嚣的世界里，",
-    "仍能听见内心的声音。",
+    /* --- Page 5 --- */
+    "　　到了八月，桂花开了。那香气是不可阻挡",
+    "的，顺着清凉的秋风，飘满了整座小城的深巷。",
+    "清晨走在石阶上，捡几朵落在青苔上的碎金，夹",
+    "在书页里，整个秋天就都有了温润的香气。",
+    "　　秋海棠静静开在阶前，红艳娇嫩。看红叶在",
+    "枝头慢慢变深，看银杏叶像一把把金色小扇落满",
+    "石板小径。院子里的柿子树挂满了红彤彤的小灯",
+    "笼，在清冷的夜风中微微摇曳，透着丰足的喜",
+    "气。",
+    "　　秋天是丰收的季节，也是沉淀的季节。洗尽",
+    "铅华，草木归真，天地间一片澄明辽阔。心中若",
+    "有桃花源，何处不是水云间。捧一杯热茶，静听",
+    "落叶萧萧，心中自在安宁。",
     "",
-    "日子慢一点，心就静一点。",
-    "一本书，一杯茶，一个下午，",
-    "便是人间好时节。",
+    /* --- Page 6 --- */
+    "　　隆冬时节，大雪纷飞，天地一白。案头清",
+    "供，不过是水仙一丛，腊梅数枝，天竹果几颗。",
+    "红白相间，在素白的天地里分外幽香。哪怕室外",
+    "冰天雪地，屋里有一盆花，便有了春意与生机。",
+    "　　绿蚁新醅酒，红泥小火炉。晚来天欲雪，能",
+    "饮一杯无。屋外寒风呼啸，屋内暖意融融。翻开",
+    "一卷泛黄的旧书，字里行间皆是岁月留下的温润",
+    "痕迹。除夕守岁，最是家人团圆暖人心。",
+    "　　草木荣枯，四时更替。看窗外白雪覆阶，炉",
+    "上水汽氤氲。愿你心中常驻一片青绿，不疾不",
+    "徐，温柔且坚定地走向每一个明朗的清晨。岁岁",
+    "常欢愉，万事皆顺遂。",
+    "",
+    "",
 };
 #define READING_LINE_COUNT ((int)(sizeof(reading_lines) / sizeof(reading_lines[0])))
-#define READING_LINES_PER_PAGE 16
+#define READING_LINES_PER_PAGE 14
 #define READING_PAGE_COUNT ((READING_LINE_COUNT + READING_LINES_PER_PAGE - 1) / READING_LINES_PER_PAGE)
 
 static void draw_reading(void) {
@@ -469,29 +614,31 @@ static void draw_reading(void) {
 
     /* header: white background + black text + subtle divider */
     put_text(
-        font_body, "人间草木 · 汪曾祺", 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_WHITE,
+        font_body, "人间草木 · 汪曾祺", 95, vcenter_baseline(font_body, 0, 76), G_BLACK, G_WHITE,
         0
     );
-    char page[16];
-    snprintf(page, sizeof(page), "%d / %d", s_read_page + 1, READING_PAGE_COUNT);
+    char page[32];
+    snprintf(page, sizeof(page), "第 %d / %d 页", s_read_page + 1, READING_PAGE_COUNT);
     put_right(
-        font_body, page, SW - 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_WHITE, 0
+        font_body, page, SW - 95, vcenter_baseline(font_body, 0, 76), G_BLACK, G_WHITE, 0
     );
-    epd_draw_hline(0, 72, SW, PX(G_BLACK), fb);
+    epd_draw_hline(95, 84, SW - 190, PX(G_BLACK), fb);
 
     /* body */
     int y = 140;
     int first = s_read_page * READING_LINES_PER_PAGE;
     for (int i = 0; i < READING_LINES_PER_PAGE && first + i < READING_LINE_COUNT; i++) {
-        put_text(font_body, reading_lines[first + i], 48, y, G_BLACK, G_WHITE, 0);
-        y += 72;
+        if (reading_lines[first + i][0] != '\0') {
+            put_text(font_body, reading_lines[first + i], 95, y, G_BLACK, G_WHITE, 0);
+        }
+        y += 80;
     }
 
     /* footer hint: white background + top divider + centered text */
-    epd_draw_hline(0, SH - 56, SW, PX(G_BLACK), fb);
+    epd_draw_hline(95, SH - 90, SW - 190, PX(G_BLACK), fb);
     put_center(
-        font_body, "UP / DOWN 翻页     OK 返回", SW / 2,
-        vcenter_baseline(font_body, SH - 56, 56), G_BLACK, G_WHITE, 0
+        font_body, "UP 上一页   ·   DOWN 下一页   ·   OK 返回主页", SW / 2,
+        vcenter_baseline(font_body, SH - 90, 80), G_BLACK, G_WHITE, 0
     );
 }
 
@@ -500,22 +647,24 @@ static void draw_reading(void) {
  * keeping static elements 100% frozen without any flicker. */
 static void draw_reading_body(void) {
     /* clear body area only (between header divider and footer divider) */
-    epd_fill_rect((EpdRect){0, 73, SW, SH - 73 - 57}, PX(G_WHITE), fb);
+    epd_fill_rect((EpdRect){0, 85, SW, SH - 85 - 91}, PX(G_WHITE), fb);
 
     /* update page number on pure white background */
-    epd_fill_rect((EpdRect){SW / 2, 0, SW / 2, 72}, PX(G_WHITE), fb);
-    char page[16];
-    snprintf(page, sizeof(page), "%d / %d", s_read_page + 1, READING_PAGE_COUNT);
+    epd_fill_rect((EpdRect){SW / 2, 0, SW / 2, 83}, PX(G_WHITE), fb);
+    char page[32];
+    snprintf(page, sizeof(page), "第 %d / %d 页", s_read_page + 1, READING_PAGE_COUNT);
     put_right(
-        font_body, page, SW - 32, vcenter_baseline(font_body, 0, 72), G_BLACK, G_WHITE, 0
+        font_body, page, SW - 95, vcenter_baseline(font_body, 0, 76), G_BLACK, G_WHITE, 0
     );
 
     /* redraw body text */
     int y = 140;
     int first = s_read_page * READING_LINES_PER_PAGE;
     for (int i = 0; i < READING_LINES_PER_PAGE && first + i < READING_LINE_COUNT; i++) {
-        put_text(font_body, reading_lines[first + i], 48, y, G_BLACK, G_WHITE, 0);
-        y += 72;
+        if (reading_lines[first + i][0] != '\0') {
+            put_text(font_body, reading_lines[first + i], 95, y, G_BLACK, G_WHITE, 0);
+        }
+        y += 80;
     }
 }
 
@@ -525,34 +674,31 @@ static void draw_reading_body(void) {
 
 enum {
     FOC_READING = 0,
-    FOC_TODO,
     FOC_APP0,
-    FOC_NAV0,
+    FOC_NAV0 = FOC_APP0 + 8,
 };
 #define FOC_APP(i) (FOC_APP0 + (i))
 #define FOC_NAV(i) (FOC_NAV0 + (i))
 #define FOC_APP_COUNT 8
 #define FOC_NAV_COUNT 4
-#define FOC_COUNT (2 + FOC_APP_COUNT + FOC_NAV_COUNT)
+#define FOC_COUNT (1 + FOC_APP_COUNT + FOC_NAV_COUNT)
 
 static int s_focus = 0;
 
 static EpdRect focus_rect(int idx) {
     if (idx == FOC_READING) {
-        return (EpdRect){24, y_cards, card_w, card_h};
-    }
-    if (idx == FOC_TODO) {
-        return (EpdRect){24 + card_w + card_gap, y_cards, card_w, card_h};
+        int pad = 28;
+        return (EpdRect){card1_x + pad, y_cards + card_h - 60, BTN_READING_W, BTN_READING_H};
     }
     if (idx >= FOC_APP0 && idx < FOC_APP0 + FOC_APP_COUNT) {
         int i = idx - FOC_APP0;
-        int row = i / 4, col = i % 4;
-        return (EpdRect){grid_x + col * (cell_w + cell_gap), y_grid + row * (cell_h + 14), cell_w, cell_h};
+        int r = i / 4, c = i % 4;
+        return (EpdRect){col_centers[c] - ICON_W / 2, row_ys[r], ICON_W, ICON_H};
     }
     if (idx >= FOC_NAV0 && idx < FOC_NAV0 + FOC_NAV_COUNT) {
         int i = idx - FOC_NAV0;
-        int tab_w = SW / 4;
-        return (EpdRect){tab_w * i, y_nav, tab_w, SH - y_nav};
+        int cx = col_centers[i];
+        return (EpdRect){cx - 50, y_nav + 6, 100, nav_h - 12};
     }
     return (EpdRect){0, 0, 0, 0};
 }
@@ -566,12 +712,18 @@ static void draw_static(void) {
     draw_background();
     draw_statusbar();
     draw_hero();
-    draw_card_reading((EpdRect){24, y_cards, card_w, card_h});
-    draw_card_todo((EpdRect){24 + card_w + card_gap, y_cards, card_w, card_h});
+    draw_card_reading((EpdRect){card1_x, y_cards, card_w, card_h});
+    draw_card_todo((EpdRect){card2_x, y_cards, card_w, card_h});
     draw_grid();
+    draw_pagination();
     draw_navbar();
 
     fb = save;
+}
+
+static void draw_focus_box(EpdRect r) {
+    if (r.width <= 0 || r.height <= 0) return;
+    draw_rounded_rect(r, 16, PX(G_BLACK), 3);
 }
 
 /* Copy the static content into the front framebuffer, then draw the focus
@@ -579,10 +731,17 @@ static void draw_static(void) {
 static void prepare_home(void) {
     memcpy(fb, g_static_fb, (size_t)SW * SH / 2);
 
-    EpdRect r = focus_rect(s_focus);
-    if (r.width > 0) {
-        epd_draw_rect((EpdRect){r.x - 3, r.y - 3, r.width + 6, r.height + 6}, PX(G_WHITE), fb);
-        epd_draw_rect((EpdRect){r.x - 1, r.y - 1, r.width + 2, r.height + 2}, PX(G_BLACK), fb);
+    if (s_focus == FOC_READING) {
+        /* Highlight only the "继续阅读" button itself using crisp pre-rendered bitmap */
+        EpdRect btn = focus_rect(FOC_READING);
+        epd_draw_rotated_image(btn, btn_reading_sel_data, fb);
+    } else if (s_focus >= FOC_APP0 && s_focus < FOC_APP0 + FOC_APP_COUNT) {
+        /* Draw the bold selected state version of the icon */
+        int idx = s_focus - FOC_APP0;
+        EpdRect icon_r = focus_rect(s_focus);
+        epd_draw_rotated_image(icon_r, g_icons_selected[idx], fb);
+    } else if (s_focus >= FOC_NAV0 && s_focus < FOC_NAV0 + FOC_NAV_COUNT) {
+        draw_focus_box(focus_rect(s_focus));
     }
 }
 
@@ -592,10 +751,10 @@ static void home_activate(void) {
         s_screen = SCR_READING;
         s_read_page = 0;
         draw_reading();
-        direct_refresh((EpdRect){0, 0, SW, SH});
+        full_refresh();
     } else {
         prepare_home();
-        partial_refresh((EpdRect){0, 0, SW, SH});
+        direct_refresh(focus_union(focus_rect(s_focus), focus_rect(s_focus)));
     }
 }
 
@@ -604,7 +763,7 @@ static void handle_event(int ev) {
         if (ev == BTN_OK) {
             s_screen = SCR_HOME;
             prepare_home();
-            partial_refresh((EpdRect){0, 0, SW, SH});
+            full_refresh();
         } else if (ev == BTN_UP) {
             if (s_read_page > 0) {
                 s_read_page--;
@@ -625,7 +784,7 @@ static void handle_event(int ev) {
         int old = s_focus;
         s_focus = (s_focus + ((ev == BTN_DOWN) ? 1 : FOC_COUNT - 1)) % FOC_COUNT;
         prepare_home();
-        partial_refresh(rect_union(focus_rect(old), focus_rect(s_focus)));
+        direct_refresh(focus_union(focus_rect(old), focus_rect(s_focus)));
     } else if (ev == BTN_OK) {
         home_activate();
     }

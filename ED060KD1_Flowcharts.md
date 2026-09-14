@@ -110,8 +110,8 @@ stateDiagram-v2
         PageView --> PageView: DOWN 键 (下一页, GL16 局部刷)
     }
 
-    SCR_HOME --> SCR_READING: 在 [正在阅读] 焦点下按下 OK 键<br/>(绘制阅读页并全屏刷新 GC16)
-    SCR_READING --> SCR_HOME: 在阅读模式下按下 OK 键<br/>(恢复主页并全屏刷新 GC16)
+    SCR_HOME --> SCR_READING: 在 [正在阅读] 焦点下按下 OK 键<br/>(绘制阅读页并全屏黑白刷新 full_refresh GC16 清除主页残影)
+    SCR_READING --> SCR_HOME: 在阅读模式下按下 OK 键退出<br/>(恢复主页并全屏黑白刷新 full_refresh GC16 恢复灰度主页)
 ```
 
 ---
@@ -135,7 +135,7 @@ sequenceDiagram
     
     Note over Loop,EPD: 开始局部刷新流程
     Loop->>EPD: 使能电源 (GPIO 46 = 1)
-    Loop->>EPD: epd_hl_update_area(MODE_GL16, union_rect)
+    Loop->>EPD: epd_hl_update_area(MODE_DU, union_rect)
     Note over EPD: 驱动控制器根据 dirty_lines 只驱动变动的扫描行，<br/>无黑白闪烁平滑更新
     Loop->>EPD: 刷新完成，切断电源 (GPIO 46 = 0) 节能
 ```
